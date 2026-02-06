@@ -2,12 +2,26 @@
 
 ## Overview
 
-CodeChronicle is a VS Code extension that combines deterministic static analysis with AI-powered semantic reasoning to help developers understand and safely modify legacy codebases. The architecture follows a clear separation of concerns: deterministic logic handles file scanning, dependency detection, and graph construction, while AWS AI services provide semantic understanding, risk assessment, and natural language interaction.
+CodeChronicle is a VS Code extension that combines deterministic static analysis with AWS cloud-powered AI reasoning to help developers understand and safely modify legacy codebases. The architecture follows a clear separation of concerns: deterministic logic handles file scanning, dependency detection, and graph construction locally, while AWS cloud services provide semantic understanding, risk assessment, and natural language interaction.
 
-The extension consists of three main layers:
-1. **Analysis Layer**: Scans the workspace, parses dependencies, and constructs the code graph
-2. **AI Layer**: Interfaces with AWS Bedrock to provide summaries, risk analysis, and natural language queries
-3. **Visualization Layer**: Renders an interactive graph in a VS Code webview
+The extension consists of four main layers:
+1. **Analysis Layer** (Local): Scans the workspace, parses dependencies, and constructs the code graph
+2. **Cloud Backend Layer** (AWS): Lambda functions orchestrate AI requests via API Gateway
+3. **AI Layer** (AWS Bedrock): Foundation models provide summaries, risk analysis, and Q&A
+4. **Visualization Layer** (Local): React.js + TailwindCSS webview renders interactive graphs
+
+## Tech Stack
+
+- **Cloud Platform**: AWS Cloud
+- **Database/Storage**: 
+  - Amazon DynamoDB for AI summaries, risk scores, and file hashes
+  - Amazon S3 for graph snapshots and analysis artifacts
+  - Amazon Neptune for large-scale graph storage and traversal (10,000+ files)
+- **Frontend**: VS Code Extension API, Webview API, React.js, TailwindCSS
+- **AI/ML**: Amazon Bedrock (Foundation Models)
+- **Backend/Orchestration**: AWS Lambda, API Gateway
+- **Authentication**: AWS IAM for role-based access control
+- **Monitoring**: Amazon CloudWatch for logs, metrics, and cost control
 
 ## Architecture
 
@@ -15,31 +29,50 @@ The extension consists of three main layers:
 
 ```mermaid
 graph TB
-    subgraph "VS Code Extension Host"
+    subgraph "VS Code Extension (Local)"
         ExtensionMain[Extension Main]
         FileWatcher[File System Watcher]
         CommandHandler[Command Handler]
+        
+        subgraph "Analysis Layer"
+            Scanner[Workspace Scanner]
+            Parser[Dependency Parser]
+            GraphBuilder[Graph Builder]
+            MetricsEngine[Metrics Engine]
+            LocalCache[Local Cache Manager]
+        end
+        
+        subgraph "Visualization Layer"
+            WebviewProvider[Webview Provider]
+            GraphRenderer[Graph Renderer - React.js]
+            UIController[UI Controller - TailwindCSS]
+        end
+        
+        APIClient[API Gateway Client]
     end
     
-    subgraph "Analysis Layer"
-        Scanner[Workspace Scanner]
-        Parser[Dependency Parser]
-        GraphBuilder[Graph Builder]
-        MetricsEngine[Metrics Engine]
-        Cache[Cache Manager]
-    end
-    
-    subgraph "AI Layer"
-        AIClient[AWS Bedrock Client]
-        SummaryService[Summary Service]
-        RiskService[Risk Assessment Service]
-        QueryService[Query Service]
-    end
-    
-    subgraph "Visualization Layer"
-        WebviewProvider[Webview Provider]
-        GraphRenderer[Graph Renderer]
-        UIController[UI Controller]
+    subgraph "AWS Cloud Backend"
+        APIGateway[API Gateway]
+        IAM[AWS IAM]
+        
+        subgraph "Lambda Functions"
+            SummaryLambda[Summary Lambda]
+            RiskLambda[Risk Assessment Lambda]
+            QueryLambda[Query Lambda]
+            GraphLambda[Graph Storage Lambda]
+        end
+        
+        subgraph "AI Services"
+            Bedrock[AWS Bedrock - Foundation Models]
+        end
+        
+        subgraph "Storage Layer"
+            DynamoDB[(DynamoDB<br/>Summaries, Risks, Hashes)]
+            S3[(S3<br/>Graph Snapshots)]
+            Neptune[(Neptune<br/>Large-Scale Graphs)]
+        end
+        
+        CloudWatch[CloudWatch<br/>Logs & Metrics]
     end
     
     ExtensionMain --> Scanner
@@ -48,21 +81,34 @@ graph TB
     Scanner --> Parser
     Parser --> GraphBuilder
     GraphBuilder --> MetricsEngine
-    GraphBuilder --> Cache
+    GraphBuilder --> LocalCache
     
     CommandHandler --> WebviewProvider
     WebviewProvider --> GraphRenderer
     GraphRenderer --> UIController
     
-    UIController --> SummaryService
-    UIController --> RiskService
-    UIController --> QueryService
+    UIController --> APIClient
+    APIClient --> APIGateway
+    APIGateway --> IAM
+    IAM --> SummaryLambda
+    IAM --> RiskLambda
+    IAM --> QueryLambda
+    IAM --> GraphLambda
     
-    SummaryService --> AIClient
-    RiskService --> AIClient
-    QueryService --> AIClient
+    SummaryLambda --> Bedrock
+    RiskLambda --> Bedrock
+    QueryLambda --> Bedrock
     
-    AIClient --> AWS[AWS Bedrock]
+    SummaryLambda --> DynamoDB
+    RiskLambda --> DynamoDB
+    QueryLambda --> DynamoDB
+    GraphLambda --> S3
+    GraphLambda --> Neptune
+    
+    SummaryLambda --> CloudWatch
+    RiskLambda --> CloudWatch
+    QueryLambda --> CloudWatch
+    GraphLambda --> CloudWatch
 ```
 
 ### Component Responsibilities
@@ -71,6 +117,7 @@ graph TB
 - Activates the extension when VS Code starts or when a relevant command is invoked
 - Registers commands, file watchers, and webview providers
 - Manages extension lifecycle and cleanup
+- Initializes API Gateway client with IAM credentials
 
 **Workspace Scanner**
 - Discovers all source files in the workspace
@@ -86,51 +133,72 @@ graph TB
 - Constructs a directed graph from parsed dependencies
 - Maintains nodes (files) and edges (dependencies)
 - Provides graph traversal methods for blast radius computation
+- Switches to Neptune for large-scale graphs (10,000+ files)
 
 **Metrics Engine**
 - Computes structural metrics: dependency count, dependent count, lines of code
 - Calculates centrality scores using graph algorithms
 - Provides deterministic complexity measures
 
-**Cache Manager**
-- Serializes and deserializes the code graph to disk
-- Caches AI-generated summaries with content hashes
-- Invalidates cache entries when files change
+**Local Cache Manager**
+- Maintains in-memory graph during extension session
+- Provides fast local access to frequently used data
+- Syncs with cloud storage (S3, DynamoDB) as needed
 
-**AWS Bedrock Client**
-- Manages authentication and connection to AWS Bedrock
-- Handles rate limiting and retry logic
-- Provides a unified interface for AI service calls
+**API Gateway Client**
+- Manages authentication with AWS IAM
+- Handles HTTP requests to API Gateway endpoints
+- Implements retry logic and exponential backoff
+- Monitors rate limits and queues requests
 
-**Summary Service**
-- Generates human-readable file summaries using AI
-- Includes context about file dependencies and role in the codebase
-- Caches results to minimize API calls
+**Lambda Functions**
+- **Summary Lambda**: Generates file summaries using Bedrock, stores in DynamoDB
+- **Risk Lambda**: Assesses file risk using Bedrock, stores in DynamoDB
+- **Query Lambda**: Processes natural language queries using Bedrock
+- **Graph Lambda**: Manages graph snapshots in S3 and Neptune operations
 
-**Risk Assessment Service**
-- Analyzes files for semantic risk factors
-- Considers business logic, side effects, security sensitivity
-- Returns risk scores (low, medium, high) with explanations
+**AWS Bedrock**
+- Provides foundation models for semantic analysis
+- Processes prompts for summaries, risk assessment, and Q&A
+- Returns structured responses to Lambda functions
 
-**Query Service**
-- Processes natural language queries about the codebase
-- Uses graph context to provide accurate answers
-- Returns file-level and line-level references
+**DynamoDB**
+- Stores AI-generated summaries with file hashes as keys
+- Stores risk assessments with file hashes
+- Enables fast cache lookups to avoid redundant AI calls
+- Supports TTL for automatic cache expiration
+
+**S3**
+- Stores graph snapshots for persistence
+- Stores analysis artifacts and historical data
+- Provides versioning for graph evolution tracking
+
+**Neptune**
+- Handles large-scale graph storage (10,000+ files)
+- Provides efficient graph traversal for blast radius queries
+- Supports Gremlin queries for complex graph operations
+
+**CloudWatch**
+- Logs Lambda execution details and errors
+- Tracks metrics: API call counts, latency, costs
+- Provides alerts for rate limits and failures
 
 **Webview Provider**
 - Creates and manages the VS Code webview panel
 - Handles communication between extension and webview
 - Passes graph data and user interactions
 
-**Graph Renderer**
-- Renders the code graph using a JavaScript graph library (e.g., Cytoscape.js)
+**Graph Renderer (React.js)**
+- Renders the code graph using a JavaScript graph library (e.g., Cytoscape.js or vis.js)
 - Applies visual encodings: size for complexity, color for risk
 - Handles user interactions: clicks, hovers, zoom, pan
+- Built with React.js for component-based UI
 
-**UI Controller**
+**UI Controller (TailwindCSS)**
 - Manages webview state and user interactions
 - Coordinates between graph visualization and side panels
 - Handles blast radius mode and query interface
+- Styled with TailwindCSS for responsive design
 
 ## Components and Interfaces
 
@@ -217,6 +285,7 @@ interface IGraphBuilder {
   updateNode(nodeId: string, content: string): void;
   removeNode(nodeId: string): void;
   computeBlastRadius(nodeId: string): string[];
+  shouldUseNeptune(): boolean;  // Check if graph size exceeds threshold
 }
 ```
 
@@ -228,56 +297,143 @@ interface IMetricsEngine {
 }
 ```
 
-### AI Layer Interfaces
+### Cloud Backend Interfaces
 
-#### IAWSBedrockClient
+#### IAPIGatewayClient
 ```typescript
-interface IAWSBedrockClient {
-  initialize(credentials: AWSCredentials): Promise<void>;
-  invokeModel(modelId: string, prompt: string): Promise<string>;
+interface IAPIGatewayClient {
+  initialize(config: AWSConfig): Promise<void>;
+  requestSummary(request: SummaryRequest): Promise<SummaryResponse>;
+  requestRiskAssessment(request: RiskRequest): Promise<RiskResponse>;
+  processQuery(request: QueryRequest): Promise<QueryResponse>;
+  uploadGraphSnapshot(graph: CodeGraph): Promise<string>;  // Returns S3 URL
   checkRateLimit(): boolean;
 }
 
-interface AWSCredentials {
-  accessKeyId: string;
-  secretAccessKey: string;
+interface AWSConfig {
+  apiGatewayEndpoint: string;
+  iamCredentials: IAMCredentials;
   region: string;
 }
-```
 
-#### ISummaryService
-```typescript
-interface ISummaryService {
-  generateSummary(node: GraphNode, graph: CodeGraph): Promise<string>;
-  getCachedSummary(nodeId: string, contentHash: string): string | null;
+interface IAMCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
 }
 ```
 
-#### IRiskAssessmentService
-```typescript
-interface IRiskAssessmentService {
-  assessRisk(node: GraphNode, graph: CodeGraph): Promise<RiskFactor>;
-}
-```
+#### Lambda Function Interfaces
 
-#### IQueryService
 ```typescript
-interface IQueryService {
-  processQuery(query: string, graph: CodeGraph): Promise<QueryResult>;
+// Summary Lambda
+interface SummaryRequest {
+  fileContent: string;
+  filePath: string;
+  fileHash: string;
+  metrics: StructuralMetrics;
+  dependencies: string[];
+  dependents: string[];
 }
 
-interface QueryResult {
+interface SummaryResponse {
+  summary: string;
+  cached: boolean;
+  timestamp: string;
+}
+
+// Risk Assessment Lambda
+interface RiskRequest {
+  fileContent: string;
+  filePath: string;
+  fileHash: string;
+  metrics: StructuralMetrics;
+  dependencies: string[];
+  dependents: string[];
+}
+
+interface RiskResponse {
+  riskFactor: RiskFactor;
+  cached: boolean;
+  timestamp: string;
+}
+
+// Query Lambda
+interface QueryRequest {
+  query: string;
+  graphContext: GraphContext;
+  maxResults: number;
+}
+
+interface QueryResponse {
   answer: string;
   references: FileReference[];
   suggestedQuestions?: string[];
+  confidence: number;
 }
 
-interface FileReference {
-  nodeId: string;
-  path: string;
-  lineNumbers?: number[];
-  snippet?: string;
+interface GraphContext {
+  totalFiles: number;
+  relevantFiles: Array<{
+    path: string;
+    summary?: string;
+    metrics: StructuralMetrics;
+  }>;
 }
+```
+
+#### DynamoDB Schema
+
+```typescript
+// Summaries Table
+interface SummaryRecord {
+  fileHash: string;           // Partition key
+  filePath: string;           // Sort key
+  summary: string;
+  timestamp: string;
+  ttl: number;                // Auto-expiration
+}
+
+// Risk Assessments Table
+interface RiskRecord {
+  fileHash: string;           // Partition key
+  filePath: string;           // Sort key
+  riskFactor: RiskFactor;
+  timestamp: string;
+  ttl: number;
+}
+```
+
+#### S3 Storage Structure
+
+```
+s3://code-chronicle-{workspace-id}/
+  ├── graphs/
+  │   ├── snapshot-{timestamp}.json
+  │   └── latest.json
+  ├── artifacts/
+  │   └── analysis-{timestamp}.json
+  └── history/
+      └── evolution-{date}.json
+```
+
+### AI Layer Interfaces
+
+#### AWS Bedrock Integration (Lambda-side)
+
+```typescript
+interface IBedrockService {
+  initialize(region: string): Promise<void>;
+  invokeModel(modelId: string, prompt: string): Promise<string>;
+  invokeModelWithRetry(modelId: string, prompt: string, maxRetries: number): Promise<string>;
+}
+
+// Used within Lambda functions
+const bedrockModels = {
+  summary: 'anthropic.claude-v2',
+  risk: 'anthropic.claude-v2',
+  query: 'anthropic.claude-v2'
+};
 ```
 
 ### Visualization Layer Interfaces
@@ -303,9 +459,11 @@ type ExtensionMessage =
   | { type: 'init', graph: CodeGraph }
   | { type: 'update', graph: CodeGraph }
   | { type: 'highlight', nodeIds: string[] }
-  | { type: 'summary', nodeId: string, summary: string }
-  | { type: 'risk', nodeId: string, risk: RiskFactor }
-  | { type: 'queryResult', result: QueryResult };
+  | { type: 'summary', nodeId: string, summary: string, cached: boolean }
+  | { type: 'risk', nodeId: string, risk: RiskFactor, cached: boolean }
+  | { type: 'queryResult', result: QueryResponse }
+  | { type: 'error', message: string, fallbackData?: any }
+  | { type: 'cloudStatus', status: 'connected' | 'disconnected' | 'rate-limited' };
 
 // Webview → Extension
 type WebviewMessage =
@@ -313,7 +471,8 @@ type WebviewMessage =
   | { type: 'blastRadius', nodeId: string }
   | { type: 'query', query: string }
   | { type: 'openFile', path: string }
-  | { type: 'refresh' };
+  | { type: 'refresh' }
+  | { type: 'toggleCloudMode', enabled: boolean };
 ```
 
 ## Data Models
@@ -324,17 +483,21 @@ The extension works directly with the VS Code workspace file system. Files are i
 
 ### Graph Storage
 
-The code graph is stored in two formats:
+The code graph is stored in multiple formats depending on scale:
 
-1. **In-Memory**: A `CodeGraph` object maintained during the extension session
-2. **Persistent Cache**: A JSON file stored in `.vscode/code-chronicle/graph-cache.json`
+1. **In-Memory (Local)**: A `CodeGraph` object maintained during the extension session
+2. **S3 (Cloud)**: JSON snapshots stored in S3 for persistence and versioning
+3. **Neptune (Cloud)**: Large-scale graphs (10,000+ files) stored in Neptune for efficient traversal
 
-Cache structure:
+S3 snapshot structure:
 ```json
 {
   "version": "1.0.0",
   "workspacePath": "/path/to/workspace",
+  "workspaceId": "abc123",
   "lastUpdated": "2024-01-15T10:30:00Z",
+  "fileCount": 1250,
+  "storageMode": "s3",  // or "neptune"
   "nodes": {
     "src/index.ts": {
       "id": "src/index.ts",
@@ -345,14 +508,7 @@ Cache structure:
         "dependencyCount": 5,
         "dependentCount": 2,
         "centralityScore": 0.75
-      },
-      "riskFactor": {
-        "level": "medium",
-        "score": 65,
-        "explanation": "Entry point with database access",
-        "factors": ["database access", "authentication"]
-      },
-      "summary": "Main application entry point..."
+      }
     }
   },
   "edges": [
@@ -365,9 +521,25 @@ Cache structure:
 }
 ```
 
+Neptune graph structure (Gremlin):
+```gremlin
+// Vertex (File)
+g.addV('file')
+  .property('id', 'src/index.ts')
+  .property('path', 'src/index.ts')
+  .property('contentHash', 'abc123...')
+  .property('linesOfCode', 150)
+  .property('centralityScore', 0.75)
+
+// Edge (Dependency)
+g.V().has('id', 'src/index.ts')
+  .addE('imports')
+  .to(g.V().has('id', 'src/database.ts'))
+```
+
 ### AI Service Prompts
 
-#### Summary Generation Prompt Template
+#### Summary Generation Prompt Template (Bedrock)
 ```
 You are analyzing a source code file in a large codebase.
 
@@ -387,9 +559,11 @@ Generate a concise summary (2-3 sentences) explaining:
 1. What this file does
 2. Why it exists in the codebase
 3. Its role in the overall architecture
+
+Return only the summary text, no additional formatting.
 ```
 
-#### Risk Assessment Prompt Template
+#### Risk Assessment Prompt Template (Bedrock)
 ```
 You are assessing the risk of modifying a source code file.
 
@@ -418,7 +592,7 @@ Return a JSON object with:
 }
 ```
 
-#### Query Processing Prompt Template
+#### Query Processing Prompt Template (Bedrock)
 ```
 You are answering questions about a codebase.
 
@@ -447,7 +621,8 @@ Format your response as JSON:
       "snippet": "relevant code snippet"
     }
   ],
-  "suggestedQuestions": ["question1", "question2"]
+  "suggestedQuestions": ["question1", "question2"],
+  "confidence": 0.85
 }
 ```
 
@@ -488,40 +663,84 @@ The parser resolves relative imports to absolute workspace paths and filters out
 
 1. **File System Errors**: File not found, permission denied, invalid path
 2. **Parsing Errors**: Malformed code, unsupported syntax, encoding issues
-3. **AI Service Errors**: Rate limiting, network failures, invalid responses
-4. **Graph Errors**: Circular dependencies, orphaned nodes, invalid references
+3. **Cloud Backend Errors**: API Gateway failures, Lambda timeouts, IAM permission issues
+4. **AI Service Errors**: Bedrock rate limiting, network failures, invalid responses
+5. **Storage Errors**: DynamoDB throttling, S3 upload failures, Neptune connection issues
+6. **Graph Errors**: Circular dependencies, orphaned nodes, invalid references
 
 ### Error Handling Strategy
 
 **File System Errors**
-- Log the error with file path and reason
+- Log the error with file path and reason to CloudWatch
 - Continue processing remaining files
 - Display a notification to the user if critical files fail
 
 **Parsing Errors**
-- Log the error with file path and line number
+- Log the error with file path and line number to CloudWatch
 - Skip the problematic file and continue
 - Mark the node as "unparsed" in the graph
 
-**AI Service Errors**
-- Implement exponential backoff for rate limiting
-- Cache and return previous results if available
-- Fall back to structural metrics only
+**Cloud Backend Errors**
+- Implement exponential backoff for API Gateway requests
+- Cache and return previous results from DynamoDB if available
+- Fall back to local-only mode if cloud is unavailable
 - Display user-friendly error messages in the UI
+- Log all errors to CloudWatch with request context
+
+**AI Service Errors (Bedrock)**
+- Implement exponential backoff for rate limiting in Lambda
+- Queue requests when rate limits are exceeded
+- Return cached results from DynamoDB if available
+- Fall back to structural metrics only
+- Log errors to CloudWatch with prompt metadata
+
+**Storage Errors**
+- Retry DynamoDB operations with exponential backoff
+- Fall back to local cache if DynamoDB is unavailable
+- Retry S3 uploads with multipart upload for large graphs
+- Switch to S3 mode if Neptune is unavailable
+- Log all storage errors to CloudWatch
 
 **Graph Errors**
 - Validate graph structure after construction
 - Remove orphaned nodes and invalid edges
-- Log warnings for circular dependencies
+- Log warnings for circular dependencies to CloudWatch
 
 ### Graceful Degradation
 
-The extension is designed to degrade gracefully when AI services are unavailable:
+The extension is designed to degrade gracefully when cloud services are unavailable:
 
-1. **No AWS Credentials**: Disable AI features, show only structural metrics
-2. **Rate Limit Exceeded**: Queue requests, show cached results, notify user
-3. **Network Failure**: Continue with deterministic features (graph, metrics)
-4. **Invalid AI Response**: Log error, show structural data, retry on next request
+1. **No AWS Credentials**: Disable cloud features, show only local structural metrics
+2. **API Gateway Unavailable**: Use local cache, show cached results, notify user
+3. **Rate Limit Exceeded**: Queue requests, show cached results from DynamoDB, notify user
+4. **Network Failure**: Continue with deterministic features (local graph, metrics)
+5. **Invalid AI Response**: Log error to CloudWatch, show structural data, retry on next request
+6. **DynamoDB Throttling**: Use local cache, queue writes, retry with backoff
+7. **Neptune Unavailable**: Fall back to S3 graph storage, limit graph size
+
+### CloudWatch Integration
+
+**Metrics Tracked**:
+- API Gateway request count and latency
+- Lambda invocation count, duration, and errors
+- Bedrock API call count and token usage
+- DynamoDB read/write capacity and throttling
+- S3 upload/download size and duration
+- Extension activation count and session duration
+
+**Logs Captured**:
+- All Lambda function executions with request/response
+- File parsing errors with file paths
+- AI service errors with prompt context
+- Storage operation failures
+- User interactions (anonymized)
+
+**Alarms Configured**:
+- Lambda error rate > 5%
+- API Gateway 5xx errors > 10 per minute
+- DynamoDB throttling events
+- Bedrock rate limit exceeded
+- Monthly cost exceeds threshold
 
 ## Testing Strategy
 
